@@ -1,0 +1,4 @@
+.secrets
+.venv/
+logs/
+settings.json
