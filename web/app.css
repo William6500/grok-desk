@@ -4,10 +4,11 @@
 --mono:ui-monospace,"SF Mono",Menlo,monospace}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--t);font-family:var(--text);font-size:15px;font-variant-numeric:tabular-nums}
-body{padding:env(safe-area-inset-top) 0 calc(84px + env(safe-area-inset-bottom))}
+:root{--sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);--sal:env(safe-area-inset-left,0px);--sar:env(safe-area-inset-right,0px);--tabh:56px}
+body{padding:var(--sat) var(--sar) calc(var(--tabh) + var(--sab) + 16px) var(--sal);min-height:100vh;box-sizing:border-box}
 a{color:inherit;text-decoration:none}
 main{padding:0 16px}
-.err{position:sticky;top:env(safe-area-inset-top);z-index:20;background:var(--c1);color:var(--red);font-size:13px;padding:10px 16px;border-bottom:.5px solid var(--sep)}
+.err{margin:0 -16px;z-index:20;background:var(--c1);color:var(--red);font-size:13px;padding:10px 16px;border-bottom:.5px solid var(--sep)}
 .nav{display:flex;align-items:center;gap:12px;height:52px}
 .nav .title{font-weight:600;font-size:17px;flex:1}
 .avatar{width:34px;height:34px;border-radius:50%;background:var(--c2);display:grid;place-items:center;font-weight:600;font-size:14px;min-width:44px;min-height:44px;background-clip:content-box;padding:5px}
@@ -35,7 +36,7 @@ canvas{display:block;width:100%}
 .sec h2{font-size:20px;margin:0;font-weight:700}.sec a{color:var(--t2);font-size:15px;min-height:44px;display:flex;align-items:center}
 .car{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 -16px;padding:0 16px;scrollbar-width:none}
 .car::-webkit-scrollbar{display:none}
-.card{flex:0 0 calc(100vw - 32px);max-width:calc(100vw - 32px);aspect-ratio:504/470;background:var(--c1);scroll-snap-align:center;padding:20px;display:flex;flex-direction:column;overflow:hidden}
+.card{box-sizing:border-box;flex:0 0 calc(100vw - 32px - var(--sal) - var(--sar));max-width:calc(100vw - 32px - var(--sal) - var(--sar));aspect-ratio:504/470;background:var(--c1);scroll-snap-align:center;padding:20px;display:flex;flex-direction:column;overflow:hidden}
 .card h3{margin:0;font-size:17px;font-weight:600;display:flex;align-items:center;gap:8px}
 .card .n{font-family:var(--disp);font-size:44px;font-weight:600;margin:10px 0 4px;letter-spacing:-.5px}
 .feed{list-style:none;margin:8px 0 0;padding:0;font-size:14px;flex:1;overflow:hidden}
@@ -57,7 +58,7 @@ canvas{display:block;width:100%}
 .empty{color:var(--t2);text-align:center;padding:28px 0}
 .skel{background:var(--c1);border-radius:12px;animation:pulse 1.2s ease-in-out infinite alternate}
 @keyframes pulse{from{opacity:.5}to{opacity:1}}
-.tabs{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:space-around;padding:6px 0 env(safe-area-inset-bottom);
+.tabs{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:space-around;align-items:center;box-sizing:content-box;height:var(--tabh);padding:0 var(--sar) var(--sab) var(--sal);
  background:rgba(22,22,24,.72);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border-top:.5px solid var(--sep);z-index:10}
 .tabs a{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:64px;min-height:48px;font-size:10px;color:var(--t3);justify-content:center}
 .tabs a.on{color:var(--t)}.tabs svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8}

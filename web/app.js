@@ -5,9 +5,25 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
   const POLL = 15;
   // opening link: {URL}#d={DATA_PATH} once, then kept in localStorage (plan B stand-in for #t=)
+  // #d= stays in the URL (history.replaceState keeps it) so Add to Home Screen captures it:
+  // iOS home-screen apps get their own storage. Also kept in localStorage + a cookie.
   const m = location.hash.match(/^#d=([A-Za-z0-9_-]{16,})/);
-  if (m) { localStorage.setItem('desk_d', m[1]); history.replaceState(null, '', location.pathname + '#/home'); }
-  const D = localStorage.getItem('desk_d');
+  const ck = (document.cookie.match(/(?:^|; )desk_d=([A-Za-z0-9_-]+)/) || [])[1];
+  let D0 = null;
+  try { D0 = localStorage.getItem('desk_d'); } catch (_) {}
+  const D = (m && m[1]) || D0 || ck || null;
+  if (D) {
+    try { localStorage.setItem('desk_d', D); } catch (_) {}
+    document.cookie = 'desk_d=' + D + '; path=/grok-desk/; max-age=31536000; SameSite=Strict; Secure';
+  }
+  const routeOf = () => location.hash.replace(/^#(d=[A-Za-z0-9_-]+&?)?\/?/, '');
+  function keepD() {
+    if (!D) return;
+    const r = routeOf() || 'home';
+    const want = '#d=' + D + '&/' + r;
+    if (location.hash !== want) history.replaceState(null, '', location.pathname + location.search + want);
+  }
+  keepD();
   const BASE = D ? '/grok-desk-data/d/' + D + '/' : null;
   const S = {state: null, chart: null, activity: null, coins: {}, last: null, fail: 0, retryAt: 0, range: 'LIVE', seen: +localStorage.getItem('seen') || 0};
   const usd = (v, d = 2) => v == null ? '–' : (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits: d, maximumFractionDigits: d});
@@ -23,13 +39,16 @@
     if (!r.ok) throw new Error(r.status);
     return r.json();
   }
+  // Pages refreshes data about every 60s (+ build time): offline only when a fetch really fails,
+  // or state.json is older than STALE_S. Last good numbers stay on screen.
+  const STALE_S = 180;
   async function poll() {
+    if (!BASE) { setErr(null); return; }              // no link: empty message only, never the red row
     try {
       const [st, ch, ac] = await Promise.all([get('state.json'), get('chart.json'), get('activity.json')]);
       S.state = st; S.chart = ch; S.activity = ac; S.last = st.ts; S.fail = 0;
-      const stale = (Date.now() - Date.parse(st.ts)) / 1000 > 120;
-      if (stale) throw new Error('stale');
-      setErr(null);
+      const age = (Date.now() - Date.parse(st.ts)) / 1000;
+      if (age > STALE_S) { S.retryAt = Date.now() + POLL * 1000; setErr(true); } else setErr(null);
     } catch (e) {
       S.fail++; S.retryAt = Date.now() + POLL * 1000; setErr(true);
     }
@@ -38,7 +57,7 @@
   }
   let errTimer;
   function setErr(on) {
-    const el = $('#err'); clearInterval(errTimer);
+    const el = ERR; clearInterval(errTimer);
     if (!on) { el.hidden = true; return; }
     const upd = () => { const n = Math.max(0, Math.ceil((S.retryAt - Date.now()) / 1000));
       el.textContent = `Desk offline · retrying in ${n}s · last update ${S.last ? tm(S.last) : '–'}`; };
@@ -232,8 +251,12 @@
     if (section) { const el = $('#set-' + section); if (el) el.scrollIntoView(); }
   }
   // ---------------- ROUTER
+  // error row sits right under the navbar (STEP 8); re-placed after every render
+  const ERR = document.getElementById('err');
+  function placeErr() { const nav = $('#view .nav'); if (nav && nav.nextSibling !== ERR) nav.after(ERR); else if (!nav && ERR.parentNode !== document.body) document.body.insertBefore(ERR, $('#view')); }
+  new MutationObserver(placeErr).observe(document.getElementById('view'), {childList: true});
   function render(update) {
-    const h = location.hash.replace(/^#\/?/, '') || 'home', [r, arg] = h.split('/');
+    const h = routeOf() || 'home', [r, arg] = h.split('/');
     document.querySelectorAll('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === (r === 'coin' || r === 'auditor' ? '' : r)));
     if (!BASE) { $('#view').innerHTML = '<h1>Grok Bot</h1><div class="empty">Open the desk link from Telegram once.</div>'; return; }
     if (r === 'agents') return update ? agents() : agents();
@@ -243,7 +266,7 @@
     if (r === 'coin') return update ? coin(arg, true) : coin(arg);
     return home(update);
   }
-  addEventListener('hashchange', () => { scrollTo(0, 0); render(false); });
+  addEventListener('hashchange', () => { keepD(); scrollTo(0, 0); render(false); });
   addEventListener('resize', () => render(false));
   render(false); poll();
 })();
