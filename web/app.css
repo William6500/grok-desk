@@ -10,7 +10,7 @@ input{-webkit-user-select:text;user-select:text;font-size:16px}
 body{display:flex;flex-direction:column;height:100vh;height:100dvh;min-height:-webkit-fill-available}
 html{height:-webkit-fill-available;background:var(--bg)}
 /* fixed header: always below the status bar / Dynamic Island, same on every tab; solid bg so nothing dims it */
-#hdr{flex:0 0 auto;padding:var(--sat) calc(16px + var(--sar)) 0 calc(16px + var(--sal));background:var(--bg);z-index:12;position:relative}
+#hdr{flex:0 0 auto;padding:calc(var(--sat) + 12px) calc(16px + var(--sar)) 0 calc(16px + var(--sal));background:var(--bg);z-index:12;position:relative}
 main#view{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:none;touch-action:pan-y;
  padding:0 calc(16px + var(--sar)) calc(var(--tabh) + var(--sab) + 16px) calc(16px + var(--sal))}
 .pnl{background:var(--c1);border-radius:16px;padding:14px 16px;margin:4px 0 10px}
