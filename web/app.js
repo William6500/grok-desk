@@ -1,4 +1,4 @@
-// Grok Bot desk · iPhone web app · plan B: polls static JSON on GitHub Pages with a ?t= cache-buster.
+// Grok Bot desk · iPhone web app · plan B: static JSON on GitHub Pages (~20s) + live encrypted ntfy.sh SSE (~1s).
 (function () {
   const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const $ = (s, e) => (e || document).querySelector(s);
@@ -16,11 +16,16 @@
     try { localStorage.setItem('desk_d', D); } catch (_) {}
     document.cookie = 'desk_d=' + D + '; path=/grok-desk/; max-age=31536000; SameSite=Strict; Secure';
   }
-  const routeOf = () => location.hash.replace(/^#(d=[A-Za-z0-9_-]+&?)?\/?/, '');
+  // live channel: #k= (AES-256 key) and #t= (ntfy topic) live only in the fragment + localStorage
+  const fk = location.hash.match(/[#&]k=([A-Za-z0-9_-]{40,})/), ft = location.hash.match(/[#&]t=([A-Za-z0-9_-]{16,64})(?=&|$)/);
+  let K = null, TP = null;
+  try { K = (fk && fk[1]) || localStorage.getItem('desk_k'); TP = (ft && ft[1]) || localStorage.getItem('desk_t'); } catch (_) {}
+  if (K && TP) { try { localStorage.setItem('desk_k', K); localStorage.setItem('desk_t', TP); } catch (_) {} }
+  const routeOf = () => location.hash.replace(/^#((?:[dkt]=[A-Za-z0-9_-]+&?)*)\/?/, '');
   function keepD() {
     if (!D) return;
     const r = routeOf() || 'home';
-    const want = '#d=' + D + '&/' + r;
+    const want = '#d=' + D + (K && TP ? '&k=' + K + '&t=' + TP : '') + '&/' + r;
     if (location.hash !== want) history.replaceState(null, '', location.pathname + location.search + want);
   }
   keepD();
@@ -73,15 +78,71 @@
     }
     if (best) {
       if (!S.last || best.t >= Date.parse(S.last)) { S.state = best.st; S.chart = best.ch; S.activity = best.ac; S.last = best.st.ts; }
+      else if (S.state) {   // live is newer: keep it, take the slow fields (settings/account) and the full chart
+        for (const k of ['settings', 'account', 'decisions']) if (best.st[k] && !S.live.hasDec) S.state[k] = best.st[k];
+        S.state.settings = best.st.settings; S.state.account = best.st.account;
+        mergeChart(best.ch);
+      }
       S.fail = 0;
       const age = (Date.now() - Date.parse(S.last)) / 1000;
-      if (age > DEAD_S) { S.retryAt = Date.now() + POLL * 1000; setErr(true); } else setErr(null);
+      if (age > DEAD_S && !liveFresh()) { S.retryAt = Date.now() + POLL * 1000; setErr(true); } else setErr(null);
     } else {
       S.fail++; S.retryAt = Date.now() + POLL * 1000;
-      if (S.fail >= FAIL_N) setErr(true);
+      if (S.fail >= FAIL_N && !liveFresh()) setErr(true);
     }
     render(true);
     clearTimeout(S.pt); S.pt = setTimeout(poll, POLL * 1000);
+  }
+  // ---------------- LIVE (ntfy.sh SSE, end-to-end encrypted, ~1s)
+  const LIVE_S = 40;                       // live counts as fresh if a message arrived in the last 40s (desk heartbeats every 10s)
+  S.live = {at: 0, es: null, key: null, hasDec: false};
+  const liveFresh = () => Date.now() - S.live.at < LIVE_S * 1000;
+  const b64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+  async function openBox(txt) {
+    if (!S.live.key) S.live.key = await crypto.subtle.importKey('raw', b64u(K), 'AES-GCM', false, ['decrypt']);
+    const b = b64u(txt.trim());
+    const z = await crypto.subtle.decrypt({name: 'AES-GCM', iv: b.slice(0, 12)}, S.live.key, b.slice(12));
+    const ds = new Blob([z]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return JSON.parse(await new Response(ds).text());
+  }
+  function mergeChart(ch) {
+    if (!ch || !S.chart) { if (ch) S.chart = ch; return; }
+    for (const r in ch.ranges) {
+      const mine = S.chart.ranges[r], theirs = ch.ranges[r];
+      if (!mine) { S.chart.ranges[r] = theirs; continue; }
+      const lastT = theirs.points.length ? theirs.points[theirs.points.length - 1][0] : '';
+      mine.points = theirs.points.concat(mine.points.filter(p => p[0] > lastT));
+      mine.marks = theirs.marks;
+    }
+  }
+  function applyLive(m) {
+    if (!m || !m.st || (S.last && Date.parse(m.ts) < Date.parse(S.last))) return;
+    const old = S.state || {};
+    S.live.hasDec = !!m.st.decisions;
+    S.state = {...old, ...m.st};
+    if (!m.st.decisions && old.decisions) S.state.decisions = old.decisions;
+    const rows = (S.activity && S.activity.rows) || [], ids = new Set(m.ac.map(r => r.id));
+    S.activity = {rows: m.ac.concat(rows.filter(r => !ids.has(r.id))).sort((a, b) => b.id - a.id).slice(0, 120)};
+    if (S.chart && m.pt) {
+      const tp = Date.parse(m.pt[0]);
+      for (const r in S.chart.ranges) {
+        const P = S.chart.ranges[r].points, last = P[P.length - 1];
+        if (last && Date.parse(last[0]) >= tp) continue;
+        if (r === 'LIVE' || !last || tp - Date.parse(last[0]) >= 60000) P.push(m.pt); else P[P.length - 1] = m.pt;
+        if (r === 'LIVE') while (P.length && Date.parse(P[0][0]) < tp - 15 * 60000) P.shift();
+      }
+    }
+    S.last = m.ts; S.live.at = Date.now(); S.fail = 0; setErr(null);
+    render(true);
+  }
+  function liveConnect() {
+    if (!K || !TP || typeof EventSource === 'undefined' || typeof DecompressionStream === 'undefined') return;
+    if (S.live.es) S.live.es.close();
+    const es = S.live.es = new EventSource('https://ntfy.sh/' + TP + '/sse');   // EventSource auto-reconnects
+    es.onmessage = async e => {
+      try { const d = JSON.parse(e.data); if (d.event === 'message' && d.message) applyLive(await openBox(d.message)); } catch (_) {}
+    };
+    es.onerror = () => { if (es.readyState === 2) setTimeout(() => S.live.es === es && liveConnect(), 3000); };
   }
   let errTimer;
   function setErr(on) {
@@ -313,7 +374,8 @@
   let lastTouch = 0;
   document.addEventListener('touchend', e => { const n = Date.now(); if (n - lastTouch < 300 && !e.target.closest('a,button,input')) e.preventDefault(); lastTouch = n; }, {passive: false});
   // back to the app (home screen or Safari tab): refresh right away instead of waiting for the next poll
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { S.fail = 0; clearTimeout(S.pt); poll(); } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { S.fail = 0; clearTimeout(S.pt); poll(); liveConnect(); } });
+  addEventListener('pageshow', e => { if (e.persisted) liveConnect(); });
   addEventListener('resize', () => render(false));
-  render(false); poll();
+  render(false); poll(); liveConnect();
 })();
