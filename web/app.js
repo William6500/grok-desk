@@ -1,4 +1,4 @@
-// Grok Bot desk · iPhone web app · plan B: static JSON on GitHub Pages (~20s) + live encrypted ntfy.sh SSE (~1s).
+// Grok Bot desk · iPhone web app · plan B: static JSON on GitHub Pages (~20s) + live encrypted Ably SSE (~1s).
 (function () {
   const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const $ = (s, e) => (e || document).querySelector(s);
@@ -16,16 +16,30 @@
     try { localStorage.setItem('desk_d', D); } catch (_) {}
     document.cookie = 'desk_d=' + D + '; path=/grok-desk/; max-age=31536000; SameSite=Strict; Secure';
   }
-  // live channel: #k= (AES-256 key) and #t= (ntfy topic) live only in the fragment + localStorage
-  const fk = location.hash.match(/[#&]k=([A-Za-z0-9_-]{40,})/), ft = location.hash.match(/[#&]t=([A-Za-z0-9_-]{16,64})(?=&|$)/);
-  let K = null, TP = null;
-  try { K = (fk && fk[1]) || localStorage.getItem('desk_k'); TP = (ft && ft[1]) || localStorage.getItem('desk_t'); } catch (_) {}
-  if (K && TP) { try { localStorage.setItem('desk_k', K); localStorage.setItem('desk_t', TP); } catch (_) {} }
-  const routeOf = () => location.hash.replace(/^#((?:[dkt]=[A-Za-z0-9_-]+&?)*)\/?/, '');
+  // live: #k= AES key, #c= Ably channel, #t= subscribe-only Ably token (never the root key)
+  const fk = location.hash.match(/[#&]k=([A-Za-z0-9_-]{40,})/);
+  const fc = location.hash.match(/[#&]c=([A-Za-z0-9_-]{16,64})/);
+  const ft = location.hash.match(/[#&]t=([^&]+)/);
+  let K = null, CH = null, TK = null;
+  try {
+    K = (fk && fk[1]) || localStorage.getItem('desk_k');
+    CH = (fc && fc[1]) || localStorage.getItem('desk_c');
+    TK = (ft && ft[1]) || localStorage.getItem('desk_t');
+  } catch (_) {}
+  function saveLiveCreds() {
+    try {
+      if (K) localStorage.setItem('desk_k', K);
+      if (CH) localStorage.setItem('desk_c', CH);
+      if (TK) localStorage.setItem('desk_t', TK);
+    } catch (_) {}
+  }
+  saveLiveCreds();
+  const routeOf = () => location.hash.replace(/^#((?:[dktc]=[^&]*&?)*)\/?/, '');
   function keepD() {
     if (!D) return;
     const r = routeOf() || 'home';
-    const want = '#d=' + D + (K && TP ? '&k=' + K + '&t=' + TP : '') + '&/' + r;
+    const live = (K && CH && TK) ? ('&k=' + K + '&c=' + CH + '&t=' + encodeURIComponent(TK)) : '';
+    const want = '#d=' + D + live + '&/' + r;
     if (location.hash !== want) history.replaceState(null, '', location.pathname + location.search + want);
   }
   keepD();
@@ -50,7 +64,7 @@
   async function getLive() {
     const now = Math.floor(Date.now() / 15000);
     for (const s of [now - 1, now - 2, now - 3]) {
-      try { const b = await get1(RAW, 'live/' + s + '.json'); return {st: b.st, ch: b.ch, ac: b.ac, t: Date.parse(b.st.ts) || 0}; } catch (_) {}
+      try { const b = await get1(RAW, 'live/' + s + '.json'); return {st: b.st, ch: b.ch, ac: b.ac, auth: b.auth, t: Date.parse(b.st.ts) || 0}; } catch (_) {}
     }
     throw new Error('no live');
   }
@@ -83,6 +97,7 @@
         S.state.settings = best.st.settings; S.state.account = best.st.account;
         mergeChart(best.ch);
       }
+      if (best.auth && best.auth.t && best.auth.c) adoptAuth(best.auth);
       S.fail = 0;
       const age = (Date.now() - Date.parse(S.last)) / 1000;
       if (age > DEAD_S && !liveFresh()) { S.retryAt = Date.now() + POLL * 1000; setErr(true); } else setErr(null);
@@ -93,9 +108,9 @@
     render(true);
     clearTimeout(S.pt); S.pt = setTimeout(poll, POLL * 1000);
   }
-  // ---------------- LIVE (ntfy.sh SSE, end-to-end encrypted, ~1s)
-  const LIVE_S = 40;                       // live counts as fresh if a message arrived in the last 40s (desk heartbeats every 10s)
-  S.live = {at: 0, es: null, key: null, hasDec: false};
+  // ---------------- LIVE (Ably SSE + E2E AES-GCM, ~1s). Browser never sees the root API key.
+  const LIVE_S = 40;
+  S.live = {at: 0, es: null, key: null, hasDec: false, lastEventId: null};
   const liveFresh = () => Date.now() - S.live.at < LIVE_S * 1000;
   const b64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0));
   async function openBox(txt) {
@@ -104,6 +119,12 @@
     const z = await crypto.subtle.decrypt({name: 'AES-GCM', iv: b.slice(0, 12)}, S.live.key, b.slice(12));
     const ds = new Blob([z]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
     return JSON.parse(await new Response(ds).text());
+  }
+  function adoptAuth(a) {
+    if (!a || !a.t || !a.c) return;
+    const changed = a.t !== TK || a.c !== CH;
+    CH = a.c; TK = a.t; saveLiveCreds(); keepD();
+    if (changed) liveConnect();
   }
   function mergeChart(ch) {
     if (!ch || !S.chart) { if (ch) S.chart = ch; return; }
@@ -121,8 +142,8 @@
     S.live.hasDec = !!m.st.decisions;
     S.state = {...old, ...m.st};
     if (!m.st.decisions && old.decisions) S.state.decisions = old.decisions;
-    const rows = (S.activity && S.activity.rows) || [], ids = new Set(m.ac.map(r => r.id));
-    S.activity = {rows: m.ac.concat(rows.filter(r => !ids.has(r.id))).sort((a, b) => b.id - a.id).slice(0, 120)};
+    const rows = (S.activity && S.activity.rows) || [], ids = new Set((m.ac || []).map(r => r.id));
+    S.activity = {rows: (m.ac || []).concat(rows.filter(r => !ids.has(r.id))).sort((a, b) => b.id - a.id).slice(0, 120)};
     if (S.chart && m.pt) {
       const tp = Date.parse(m.pt[0]);
       for (const r in S.chart.ranges) {
@@ -136,13 +157,30 @@
     render(true);
   }
   function liveConnect() {
-    if (!K || !TP || typeof EventSource === 'undefined' || typeof DecompressionStream === 'undefined') return;
-    if (S.live.es) S.live.es.close();
-    const es = S.live.es = new EventSource('https://ntfy.sh/' + TP + '/sse');   // EventSource auto-reconnects
+    if (!K || !CH || !TK || typeof EventSource === 'undefined' || typeof DecompressionStream === 'undefined') return;
+    if (S.live.es) { try { S.live.es.close(); } catch (_) {} }
+    // decodeURIComponent in case keepD double-encoded; Ably tokens contain '.'
+    let tok = TK; try { tok = decodeURIComponent(TK); } catch (_) {}
+    const last = S.live.lastEventId ? ('&lastEvent=' + encodeURIComponent(S.live.lastEventId)) : '';
+    const url = 'https://main.realtime.ably.net/sse?v=1.2&channels=' + encodeURIComponent(CH)
+      + '&accessToken=' + encodeURIComponent(tok) + last;
+    const es = S.live.es = new EventSource(url);
     es.onmessage = async e => {
-      try { const d = JSON.parse(e.data); if (d.event === 'message' && d.message) applyLive(await openBox(d.message)); } catch (_) {}
+      try {
+        if (e.lastEventId) S.live.lastEventId = e.lastEventId;
+        const d = JSON.parse(e.data);
+        const payload = d.data != null ? d.data : (d.messages && d.messages[0] && d.messages[0].data);
+        if (typeof payload === 'string' && payload.length > 20) applyLive(await openBox(payload));
+      } catch (_) {}
     };
-    es.onerror = () => { if (es.readyState === 2) setTimeout(() => S.live.es === es && liveConnect(), 3000); };
+    es.addEventListener('error', ev => {
+      try {
+        const body = ev && ev.data ? JSON.parse(ev.data) : null;
+        const code = body && body.code;
+        if (code >= 40140 && code < 40150) { es.close(); return; }  // wait for GitHub auth refresh
+      } catch (_) {}
+      if (es.readyState === 2) setTimeout(() => S.live.es === es && liveConnect(), 3000);
+    });
   }
   let errTimer;
   function setErr(on) {
