@@ -33,27 +33,44 @@
   const fmtP = v => v == null ? '–' : v >= 1 ? '$' + v.toFixed(4) : '$' + v.toPrecision(4);
   const big = v => v == null ? 'n/a' : v >= 1e6 ? '$' + (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? '$' + (v / 1e3).toFixed(1) + 'K' : '$' + v.toFixed(0);
 
-  async function get(p) {
-    if (!BASE) throw new Error('no link');
-    const r = await fetch(BASE + p + '?t=' + Date.now(), {cache: 'no-store'});
+  // Two mirrors of the same data repo: GitHub Pages (main) and raw.githubusercontent (fallback when a
+  // Pages deploy is stuck or queued; its CDN caches up to 300s). The newest state.json wins.
+  const RAW = D ? 'https://raw.githubusercontent.com/William6500/grok-desk-data/main/d/' + D + '/' : null;
+  async function get1(base, p) {
+    const r = await fetch(base + p + '?t=' + Date.now(), {cache: 'no-store'});
     if (!r.ok) throw new Error(r.status);
     return r.json();
   }
-  // Pages refreshes data about every 60s (+ build time): offline only when a fetch really fails,
-  // or state.json is older than STALE_S. Last good numbers stay on screen.
-  const STALE_S = 180;
+  async function getSet(base) {
+    const [st, ch, ac] = await Promise.all([get1(base, 'state.json'), get1(base, 'chart.json'), get1(base, 'activity.json')]);
+    return {st, ch, ac, t: Date.parse(st.ts) || 0};
+  }
+  async function get(p) {
+    if (!BASE) throw new Error('no link');
+    try { return await get1(BASE, p); } catch (e) { return get1(RAW, p); }
+  }
+  // Offline ONLY on a real failure: every fetch failed for FAIL_N polls in a row (~45s),
+  // or the newest data from both mirrors is older than DEAD_S (desk really stopped).
+  // Normal latency measured end to end: 20-90s (60s push + 20s deploy), up to 11 min when a Pages deploy hangs.
+  const FAIL_N = 3, DEAD_S = 600, MIRROR_S = 150;
   async function poll() {
     if (!BASE) { setErr(null); return; }              // no link: empty message only, never the red row
-    try {
-      const [st, ch, ac] = await Promise.all([get('state.json'), get('chart.json'), get('activity.json')]);
-      S.state = st; S.chart = ch; S.activity = ac; S.last = st.ts; S.fail = 0;
-      const age = (Date.now() - Date.parse(st.ts)) / 1000;
-      if (age > STALE_S) { S.retryAt = Date.now() + POLL * 1000; setErr(true); } else setErr(null);
-    } catch (e) {
-      S.fail++; S.retryAt = Date.now() + POLL * 1000; setErr(true);
+    let best = null;
+    try { best = await getSet(BASE); } catch (_) {}
+    if (!best || (Date.now() - best.t) / 1000 > MIRROR_S) {
+      try { const r = await getSet(RAW); if (!best || r.t > best.t) best = r; } catch (_) {}
+    }
+    if (best) {
+      if (!S.last || best.t >= Date.parse(S.last)) { S.state = best.st; S.chart = best.ch; S.activity = best.ac; S.last = best.st.ts; }
+      S.fail = 0;
+      const age = (Date.now() - Date.parse(S.last)) / 1000;
+      if (age > DEAD_S) { S.retryAt = Date.now() + POLL * 1000; setErr(true); } else setErr(null);
+    } else {
+      S.fail++; S.retryAt = Date.now() + POLL * 1000;
+      if (S.fail >= FAIL_N) setErr(true);
     }
     render(true);
-    setTimeout(poll, POLL * 1000);
+    clearTimeout(S.pt); S.pt = setTimeout(poll, POLL * 1000);
   }
   let errTimer;
   function setErr(on) {
@@ -83,25 +100,47 @@
 
   function navbar() {
     const unread = S.state && S.state.unread > S.seen;
-    return `<div class="nav"><a class="avatar" href="#/account">W</a><div class="title">Grok Bot ›</div>
+    S.navKey = String(!!unread) + !!S.showPnl;
+    return `<div class="nav"><a class="avatar" href="#/account">W</a><button class="title" id="ttl" aria-label="Show PnL">Grok Bot ${S.showPnl ? '⌄' : '›'}</button>
       <button class="ib" id="sbtn" aria-label="Search">${searchIco}</button>
       <a class="ib" href="#/activity" id="bell" aria-label="Pushes">${bellIco}${unread ? '<i class="dot"></i>' : ''}</a></div>
       <input class="search" id="search" placeholder="Name, symbol or mint" hidden>`;
   }
+  function header() {
+    const box = document.getElementById('navbox');
+    const key = String(!!(S.state && S.state.unread > S.seen)) + !!S.showPnl;
+    if (box.firstChild && S.navKey === key) return;
+    const q = $('#search'), keepQ = q && !q.hidden ? q.value : null;
+    box.innerHTML = BASE ? navbar() : '<div class="nav"><div class="title">Grok Bot</div></div>';
+    if (keepQ != null) { $('#search').hidden = false; $('#search').value = keepQ; }
+    wireSearch();
+    const t = $('#ttl'); if (t) t.onclick = () => { S.showPnl = !S.showPnl; if ((routeOf() || 'home').split('/')[0] !== 'home') location.hash = '#/home'; else render(false); };
+  }
+  // tap "Grok Bot" (top left): realized + unrealized PnL from state.pnl
+  function pnlCard(st) {
+    const p = st.pnl; if (!p) return '<div class="pnl"><div class="sub">PnL not published yet</div></div>';
+    const c = v => v > 0 ? 'g' : v < 0 ? 'r' : '';
+    const sg = v => (v > 0 ? '+' : '') + usd(v);
+    return `<div class="pnl"><div class="l"><b>PnL</b>${p.mode === 'PAPER' ? '<span class="pill paper">PAPER</span>' : '<span class="pill">LIVE</span>'}</div>
+      <div class="l"><span class="sub">Total</span><b class="${c(p.total)}">${sg(p.total)}</b></div>
+      <div class="l"><span class="sub">Realized · ${p.closed} closed</span><span class="${c(p.realized)}">${sg(p.realized)}</span></div>
+      <div class="l"><span class="sub">Unrealized · ${p.open} open</span><span class="${c(p.unrealized)}">${sg(p.unrealized)}</span></div>
+      ${p.realizedTonight != null ? `<div class="l"><span class="sub">Realized tonight · ${p.closedTonight} closed</span><span class="${c(p.realizedTonight)}">${sg(p.realizedTonight)}</span></div>` : ''}</div>`;
+  }
   // ---------------- HOME
   function home(update) {
     const st = S.state, v = $('#view');
-    if (!st) { v.innerHTML = navbar() + skel(80) + skel(30) + skel(220) + skel(44) + `<div class="car">${'<div class="card skel"></div>'.repeat(2)}</div>` + skel(240); return; }
-    if (!update || !$('#bal')) {
-      v.innerHTML = navbar() + `<div class="bal"><div class="big odo" id="bal"></div>${paperBadge()}</div>
+    if (!st) { v.innerHTML = skel(80) + skel(30) + skel(220) + skel(44) + `<div class="car">${'<div class="card skel"></div>'.repeat(2)}</div>` + skel(240); return; }
+    if (!update || !$('#bal') || !!$('#pnl') !== !!S.showPnl) {
+      v.innerHTML = (S.showPnl ? '<div id="pnl"></div>' : '') + `<div class="bal"><div class="big odo" id="bal"></div>${paperBadge()}</div>
         <div class="today"><span id="todayp"></span><span class="pill mult" id="mult"></span></div>
         <canvas id="line"></canvas>
         <div class="ranges">${['LIVE', '1H', '4H', '1D', '1W', 'ALL'].map(r => `<button data-r="${r}" class="${r === S.range ? 'on' : ''}">${r}</button>`).join('')}</div>
         <div class="sec"><h2 id="agh"></h2></div><div class="car" id="car"></div>
         <div class="sec"><h2>Activity</h2><a href="#/activity">See all</a></div><div class="list" id="act5"></div>`;
       v.querySelectorAll('.ranges button').forEach(b => b.onclick = () => { S.range = b.dataset.r; render(); });
-      wireSearch();
     }
+    if (S.showPnl) $('#pnl').innerHTML = pnlCard(st);
     odo($('#bal'), usd(st.balance));
     const tp = $('#todayp'); tp.textContent = pct(st.todayPct) + ' today'; tp.className = st.todayPct >= 0 ? 'g' : 'r';
     $('#mult').textContent = st.multiplier.toFixed(2) + '×';
@@ -161,8 +200,7 @@
       return `<div class="acard"><div class="hd"><span class="sd ${a.running ? '' : 'off'}"></span><h3>${a.name}</h3><span class="sub">${a.today} today</span>
         <button class="sw ${a.paused ? '' : 'on'}" disabled aria-label="pause/resume" title="${locked ? 'locked while a position is open' : 'pause ' + k + ' via Telegram'}"></button></div>
         <div class="note">${a.paused ? 'paused' : 'running'}${locked ? ' · locked while a position is open' : ''} · pause/resume via Telegram</div>
-        <div class="dec">${dec.length ? dec.map(d => `<div class="row"><span class="sub" style="width:44px">${tm(d.ts)}</span><span class="mid"><a href="${esc(d.coin_url)}" class="t1">${esc(d.name)}</a><div class="t2">${esc(d.reason || '')}</div></span><span class="v ${/kill|reject|stop/.test(d.verdict) ? 'r' : 'g'}">${esc(d.verdict)}</span></div>`).join('') : '<div class="empty">' + (k === 'scanner' ? 'Listening for graduations' : 'Nothing yet tonight') + '</div>'}</div>
-        <a class="back" href="#/account/${k}">Settings</a></div>`;
+        <div class="dec">${dec.length ? dec.map(d => `<div class="row"><span class="sub" style="width:44px">${tm(d.ts)}</span><span class="mid"><a href="${esc(d.coin_url)}" class="t1">${esc(d.name)}</a><div class="t2">${esc(d.reason || '')}</div></span><span class="v ${/kill|reject|stop/.test(d.verdict) ? 'r' : 'g'}">${esc(d.verdict)}</span></div>`).join('') : '<div class="empty">' + (k === 'scanner' ? 'Listening for graduations' : 'Nothing yet tonight') + '</div>'}</div></div>`;
     }).join('');
   }
   // ---------------- ACTIVITY
@@ -230,43 +268,42 @@
     const st = S.state, v = $('#view');
     if (!st) { v.innerHTML = '<h1>Account</h1>' + skel(44) + skel(60, 1).repeat(4) + skel(300); return; }
     const a = st.account;
-    const groups = Object.entries(st.settings).map(([g, items]) => `<div class="sec" id="set-${g}"><h2>${g[0].toUpperCase() + g.slice(1)}</h2></div><div class="acard">` + items.map(s => {
-      const val = typeof s.value === 'boolean' ? (s.value ? 'on' : 'off') : s.value;
-      const slider = s.min != null && typeof s.value === 'number' ? `<input type="range" min="${s.min}" max="${s.max}" step="any" value="${s.value}" disabled>` : '';
-      return `<div class="set"><div class="l"><span>${esc(s.name)}</span><input class="mono" style="width:110px;text-align:right;background:var(--c2);color:#fff;border:0;border-radius:8px;height:32px;padding:0 8px" value="${esc(val)}" readonly></div>${slider}</div>`;
-    }).join('') + '</div>').join('');
     v.innerHTML = `<h1>Account</h1>
       <div class="seg"><button class="${a.mode === 'PAPER' ? 'on' : ''}" disabled>PAPER</button><button class="${a.mode === 'LIVE' ? 'on' : ''}" disabled>LIVE</button></div>
       <div class="note">Read-only in plan B. Switch with "paper" or "live" (type LIVE to confirm) on Telegram.</div>
-      <div class="list" style="margin-top:12px">
+      <div class="list" id="acct" style="margin-top:12px">
         <div class="row"><span class="mid"><div class="t1">Stack</div><div class="t2">${a.mode === 'PAPER' ? 'PAPER balance' : 'LIVE stack · "stack N" on Telegram'}</div></span><span class="v">${usd(a.stack)}</span></div>
         <a class="row" href="${esc(a.profile_url)}"><span class="mid"><div class="t1">Your FOMO profile</div></span><span class="v sub">›</span></a>
         <a class="row" href="${esc(a.signup_url)}" id="invite"><span class="mid"><div class="t1">Invite a friend</div></span><span class="v sub">›</span></a>
         <div class="row"><span class="mid"><div class="t1">Telegram</div><div class="t2">${a.telegram.connected ? 'connected' : 'not connected'}</div></span><a class="v" style="color:var(--blue)" href="https://t.me/FomoCoolbot">Send test push</a></div>
-        <div class="row"><span class="mid"><div class="t1">Notifications</div><div class="t2">Pushes go via Telegram (plan B has no web push)</div></span></div>
       </div>
-      <div class="note" id="copied" hidden>Link copied</div>${groups}`;
+      <div class="note" id="copied" hidden>Link copied</div>`;
     $('#invite').onclick = async e => { e.preventDefault(); const url = a.signup_url;
       if (navigator.share) { try { await navigator.share({url}); } catch (_) {} } else { try { await navigator.clipboard.writeText(url); } catch (_) {} $('#copied').hidden = false; } };
-    if (section) { const el = $('#set-' + section); if (el) el.scrollIntoView(); }
-  }
+      }
   // ---------------- ROUTER
   // error row sits right under the navbar (STEP 8); re-placed after every render
   const ERR = document.getElementById('err');
-  function placeErr() { const nav = $('#view .nav'); if (nav && nav.nextSibling !== ERR) nav.after(ERR); else if (!nav && ERR.parentNode !== document.body) document.body.insertBefore(ERR, $('#view')); }
-  new MutationObserver(placeErr).observe(document.getElementById('view'), {childList: true});
   function render(update) {
     const h = routeOf() || 'home', [r, arg] = h.split('/');
     document.querySelectorAll('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === (r === 'coin' || r === 'auditor' ? '' : r)));
+    header();
     if (!BASE) { $('#view').innerHTML = '<h1>Grok Bot</h1><div class="empty">Open the desk link from Telegram once.</div>'; return; }
     if (r === 'agents') return update ? agents() : agents();
     if (r === 'activity') return activity();
-    if (r === 'account') return update && $('#set-desk') ? null : account(arg);
+    if (r === 'account') return update && $('#acct') ? null : account(arg);
     if (r === 'auditor') return auditor(arg, update);
     if (r === 'coin') return update ? coin(arg, true) : coin(arg);
     return home(update);
   }
-  addEventListener('hashchange', () => { keepD(); scrollTo(0, 0); render(false); });
+  addEventListener('hashchange', () => { keepD(); $('#view').scrollTop = 0; render(false); });
+  // pages are fixed: no pinch / double-tap zoom (iOS ignores user-scalable=no)
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach(t => document.addEventListener(t, e => e.preventDefault(), {passive: false}));
+  document.addEventListener('touchmove', e => { if (e.touches.length > 1 || (e.scale && e.scale !== 1)) e.preventDefault(); }, {passive: false});
+  let lastTouch = 0;
+  document.addEventListener('touchend', e => { const n = Date.now(); if (n - lastTouch < 300 && !e.target.closest('a,button,input')) e.preventDefault(); lastTouch = n; }, {passive: false});
+  // back to the app (home screen or Safari tab): refresh right away instead of waiting for the next poll
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { S.fail = 0; clearTimeout(S.pt); poll(); } });
   addEventListener('resize', () => render(false));
   render(false); poll();
 })();

@@ -5,10 +5,18 @@
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--t);font-family:var(--text);font-size:15px;font-variant-numeric:tabular-nums}
 :root{--sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);--sal:env(safe-area-inset-left,0px);--sar:env(safe-area-inset-right,0px);--tabh:56px}
-body{padding:var(--sat) var(--sar) calc(var(--tabh) + var(--sab) + 16px) var(--sal);min-height:100vh;box-sizing:border-box}
+html,body{position:fixed;inset:0;width:100%;height:100%;overflow:hidden;overscroll-behavior:none;touch-action:pan-y;-webkit-text-size-adjust:100%;-webkit-user-select:none;user-select:none}
+input{-webkit-user-select:text;user-select:text;font-size:16px}
+body{display:flex;flex-direction:column}
+/* fixed header: always below the status bar / Dynamic Island, same on every tab; solid bg so nothing dims it */
+#hdr{flex:0 0 auto;padding:var(--sat) calc(16px + var(--sar)) 0 calc(16px + var(--sal));background:var(--bg);z-index:12;position:relative}
+main#view{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:none;touch-action:pan-y;
+ padding:0 calc(16px + var(--sar)) calc(var(--tabh) + var(--sab) + 16px) calc(16px + var(--sal))}
+.pnl{background:var(--c1);border-radius:16px;padding:14px 16px;margin:4px 0 10px}
+.pnl .l{display:flex;justify-content:space-between;min-height:30px;align-items:center}
+.nav .title{background:none;border:0;color:var(--t);text-align:left;padding:0;min-height:44px}
 a{color:inherit;text-decoration:none}
-main{padding:0 16px}
-.err{margin:0 -16px;z-index:20;background:var(--c1);color:var(--red);font-size:13px;padding:10px 16px;border-bottom:.5px solid var(--sep)}
+.err{margin:0 -16px;border-radius:0;z-index:20;background:var(--c1);color:var(--red);font-size:13px;padding:10px 16px;border-bottom:.5px solid var(--sep)}
 .nav{display:flex;align-items:center;gap:12px;height:52px}
 .nav .title{font-weight:600;font-size:17px;flex:1}
 .avatar{width:34px;height:34px;border-radius:50%;background:var(--c2);display:grid;place-items:center;font-weight:600;font-size:14px;min-width:44px;min-height:44px;background-clip:content-box;padding:5px}
@@ -89,3 +97,4 @@ input[type=range]{width:100%;accent-color:var(--green)}
 .note{font-size:13px;color:var(--t2);margin:6px 0}
 h1{font-size:28px;margin:8px 0}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+.car{touch-action:pan-x pan-y}
