@@ -41,6 +41,14 @@
     if (!r.ok) throw new Error(r.status);
     return r.json();
   }
+  // 15s path: newest live/{slot}.json on raw (slot = epoch // 15, a fresh URL every 15s, never cached)
+  async function getLive() {
+    const now = Math.floor(Date.now() / 15000);
+    for (const s of [now - 1, now - 2, now - 3]) {
+      try { const b = await get1(RAW, 'live/' + s + '.json'); return {st: b.st, ch: b.ch, ac: b.ac, t: Date.parse(b.st.ts) || 0}; } catch (_) {}
+    }
+    throw new Error('no live');
+  }
   async function getSet(base) {
     const [st, ch, ac] = await Promise.all([get1(base, 'state.json'), get1(base, 'chart.json'), get1(base, 'activity.json')]);
     return {st, ch, ac, t: Date.parse(st.ts) || 0};
@@ -56,7 +64,10 @@
   async function poll() {
     if (!BASE) { setErr(null); return; }              // no link: empty message only, never the red row
     let best = null;
-    try { best = await getSet(BASE); } catch (_) {}
+    try { best = await getLive(); } catch (_) {}
+    if (!best || (Date.now() - best.t) / 1000 > MIRROR_S) {
+      try { const r = await getSet(BASE); if (!best || r.t > best.t) best = r; } catch (_) {}
+    }
     if (!best || (Date.now() - best.t) / 1000 > MIRROR_S) {
       try { const r = await getSet(RAW); if (!best || r.t > best.t) best = r; } catch (_) {}
     }
@@ -100,39 +111,27 @@
 
   function navbar() {
     const unread = S.state && S.state.unread > S.seen;
-    S.navKey = String(!!unread) + !!S.showPnl;
-    return `<div class="nav"><a class="avatar" href="#/account">W</a><button class="title" id="ttl" aria-label="Show PnL">Grok Bot ${S.showPnl ? '⌄' : '›'}</button>
+    S.navKey = String(!!unread);
+    return `<div class="nav"><a class="avatar" href="#/account">W</a><div class="title">Grok Bot ›</div>
       <button class="ib" id="sbtn" aria-label="Search">${searchIco}</button>
       <a class="ib" href="#/activity" id="bell" aria-label="Pushes">${bellIco}${unread ? '<i class="dot"></i>' : ''}</a></div>
       <input class="search" id="search" placeholder="Name, symbol or mint" hidden>`;
   }
   function header() {
     const box = document.getElementById('navbox');
-    const key = String(!!(S.state && S.state.unread > S.seen)) + !!S.showPnl;
+    const key = String(!!(S.state && S.state.unread > S.seen));
     if (box.firstChild && S.navKey === key) return;
     const q = $('#search'), keepQ = q && !q.hidden ? q.value : null;
     box.innerHTML = BASE ? navbar() : '<div class="nav"><div class="title">Grok Bot</div></div>';
     if (keepQ != null) { $('#search').hidden = false; $('#search').value = keepQ; }
     wireSearch();
-    const t = $('#ttl'); if (t) t.onclick = () => { S.showPnl = !S.showPnl; if ((routeOf() || 'home').split('/')[0] !== 'home') location.hash = '#/home'; else render(false); };
-  }
-  // tap "Grok Bot" (top left): realized + unrealized PnL from state.pnl
-  function pnlCard(st) {
-    const p = st.pnl; if (!p) return '<div class="pnl"><div class="sub">PnL not published yet</div></div>';
-    const c = v => v > 0 ? 'g' : v < 0 ? 'r' : '';
-    const sg = v => (v > 0 ? '+' : '') + usd(v);
-    return `<div class="pnl"><div class="l"><b>PnL</b>${p.mode === 'PAPER' ? '<span class="pill paper">PAPER</span>' : '<span class="pill">LIVE</span>'}</div>
-      <div class="l"><span class="sub">Total</span><b class="${c(p.total)}">${sg(p.total)}</b></div>
-      <div class="l"><span class="sub">Realized · ${p.closed} closed</span><span class="${c(p.realized)}">${sg(p.realized)}</span></div>
-      <div class="l"><span class="sub">Unrealized · ${p.open} open</span><span class="${c(p.unrealized)}">${sg(p.unrealized)}</span></div>
-      ${p.realizedTonight != null ? `<div class="l"><span class="sub">Realized tonight · ${p.closedTonight} closed</span><span class="${c(p.realizedTonight)}">${sg(p.realizedTonight)}</span></div>` : ''}</div>`;
   }
   // ---------------- HOME
   function home(update) {
     const st = S.state, v = $('#view');
     if (!st) { v.innerHTML = skel(80) + skel(30) + skel(220) + skel(44) + `<div class="car">${'<div class="card skel"></div>'.repeat(2)}</div>` + skel(240); return; }
-    if (!update || !$('#bal') || !!$('#pnl') !== !!S.showPnl) {
-      v.innerHTML = (S.showPnl ? '<div id="pnl"></div>' : '') + `<div class="bal"><div class="big odo" id="bal"></div>${paperBadge()}</div>
+    if (!update || !$('#bal')) {
+      v.innerHTML = `<div class="bal"><div class="big odo" id="bal"></div>${paperBadge()}</div>
         <div class="today"><span id="todayp"></span><span class="pill mult" id="mult"></span></div>
         <canvas id="line"></canvas>
         <div class="ranges">${['LIVE', '1H', '4H', '1D', '1W', 'ALL'].map(r => `<button data-r="${r}" class="${r === S.range ? 'on' : ''}">${r}</button>`).join('')}</div>
@@ -140,7 +139,6 @@
         <div class="sec"><h2>Activity</h2><a href="#/activity">See all</a></div><div class="list" id="act5"></div>`;
       v.querySelectorAll('.ranges button').forEach(b => b.onclick = () => { S.range = b.dataset.r; render(); });
     }
-    if (S.showPnl) $('#pnl').innerHTML = pnlCard(st);
     odo($('#bal'), usd(st.balance));
     const tp = $('#todayp'); tp.textContent = pct(st.todayPct) + ' today'; tp.className = st.todayPct >= 0 ? 'g' : 'r';
     $('#mult').textContent = st.multiplier.toFixed(2) + '×';
@@ -267,20 +265,32 @@
   function account(section) {
     const st = S.state, v = $('#view');
     if (!st) { v.innerHTML = '<h1>Account</h1>' + skel(44) + skel(60, 1).repeat(4) + skel(300); return; }
-    const a = st.account;
+    const a = st.account, sv = a.settings || st.settings || {};
+    const field = s => {
+      if (s.choices) return `<div class="row"><span class="mid"><div class="t1">${esc(s.name)}</div></span><span class="v">${esc(String(s.value))}</span></div>`;
+      if (typeof s.value === 'boolean') return `<div class="row"><span class="mid"><div class="t1">${esc(s.name)}</div></span><input type="checkbox" ${s.value ? 'checked' : ''} disabled></div>`;
+      return `<div class="row sl"><span class="mid"><div class="t1">${esc(s.name)}</div>
+        <input type="range" min="${s.min ?? 0}" max="${s.max ?? 100}" step="any" value="${s.value}" disabled></span>
+        <input class="num" type="number" value="${s.value}" disabled></div>`;
+    };
     v.innerHTML = `<h1>Account</h1>
       <div class="seg"><button class="${a.mode === 'PAPER' ? 'on' : ''}" disabled>PAPER</button><button class="${a.mode === 'LIVE' ? 'on' : ''}" disabled>LIVE</button></div>
-      <div class="note">Read-only in plan B. Switch with "paper" or "live" (type LIVE to confirm) on Telegram.</div>
+      <div class="note">Read-only (plan B). Switch on Telegram: "paper" or "live", then type LIVE to confirm.</div>
       <div class="list" id="acct" style="margin-top:12px">
-        <div class="row"><span class="mid"><div class="t1">Stack</div><div class="t2">${a.mode === 'PAPER' ? 'PAPER balance' : 'LIVE stack · "stack N" on Telegram'}</div></span><span class="v">${usd(a.stack)}</span></div>
+        <div class="row"><span class="mid"><div class="t1">Stack</div><div class="t2">"stack N" on Telegram</div></span><input class="num" type="number" value="${a.stack}" disabled></div>
         <a class="row" href="${esc(a.profile_url)}"><span class="mid"><div class="t1">Your FOMO profile</div></span><span class="v sub">›</span></a>
         <a class="row" href="${esc(a.signup_url)}" id="invite"><span class="mid"><div class="t1">Invite a friend</div></span><span class="v sub">›</span></a>
-        <div class="row"><span class="mid"><div class="t1">Telegram</div><div class="t2">${a.telegram.connected ? 'connected' : 'not connected'}</div></span><a class="v" style="color:var(--blue)" href="https://t.me/FomoCoolbot">Send test push</a></div>
       </div>
-      <div class="note" id="copied" hidden>Link copied</div>`;
+      <div class="note" id="copied" hidden>Link copied</div>
+      ${Object.entries(sv).map(([g, items]) => `<div class="sec"><h2>${esc(g)}</h2></div><div class="list">${items.map(field).join('')}</div>`).join('')}
+      <div class="note">Settings change on Telegram: "set stop to -8%".</div>
+      <div class="sec"><h2>Telegram</h2></div><div class="list">
+        <div class="row"><span class="mid"><div class="t1">Telegram</div><div class="t2">${a.telegram && a.telegram.connected ? 'connected' : 'not connected'}</div></span><a class="v" style="color:var(--blue)" href="https://t.me/FomoCoolbot?start=testpush">Send test push</a></div>
+        <div class="row"><span class="mid"><div class="t1">Notifications</div><div class="t2">${esc(a.webpush || 'Plan B: Telegram only')}</div></span></div>
+      </div>`;
     $('#invite').onclick = async e => { e.preventDefault(); const url = a.signup_url;
       if (navigator.share) { try { await navigator.share({url}); } catch (_) {} } else { try { await navigator.clipboard.writeText(url); } catch (_) {} $('#copied').hidden = false; } };
-      }
+  }
   // ---------------- ROUTER
   // error row sits right under the navbar (STEP 8); re-placed after every render
   const ERR = document.getElementById('err');

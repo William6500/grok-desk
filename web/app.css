@@ -99,3 +99,4 @@ input[type=range]{width:100%;accent-color:var(--green)}
 h1{font-size:28px;margin:8px 0}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 .car{touch-action:pan-x pan-y}
+.row.sl .mid{flex:1;margin-right:10px}.row.sl input[type=range]{margin-top:6px}.num{width:84px;background:var(--c2);color:var(--t);border:0;border-radius:8px;padding:6px 8px;font-size:16px;text-align:right}
