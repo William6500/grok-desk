@@ -328,32 +328,61 @@
     v.innerHTML = '<h1>Activity</h1><div class="list">' + actRows(S.activity.rows) + '</div>';
   }
   // ---------------- AUDITOR SCREEN
-  const beamDone = {};
+  const FR_LAYER = {
+    'Mint authority': 'Autorité mint', 'Freeze authority': 'Autorité freeze',
+    'Dev wallet': 'Wallet du créateur', 'Top 10 holders': 'Top 10 détenteurs',
+    'Liquidity': 'Liquidité', 'Pool age': 'Âge du pool',
+    'Bundled wallets': 'Wallets groupés', 'Delegations': 'Délégations',
+    'Mint': 'Autorité mint', 'Freeze': 'Autorité freeze', 'Dev': 'Wallet du créateur',
+    'Top10': 'Top 10 détenteurs', 'LP': 'Liquidité', 'Age': 'Âge du pool',
+    'Bundles': 'Wallets groupés', 'Delegation': 'Délégations'
+  };
+  const layerDone = {};
+  function layerLabel(name) { return FR_LAYER[name] || name; }
+  function layerStatus(pass) {
+    if (pass === true) return {cls: 'ok', st: 'OK', badge: '✓'};
+    if (pass === false) return {cls: 'no', st: 'Échec', badge: '✕'};
+    return {cls: 'wait', st: 'En attente', badge: '·'};
+  }
   async function auditor(mint, update) {
     const v = $('#view');
     let c = S.coins[mint];
-    if (!c || !update) { try { c = S.coins[mint] = await get('coin/' + mint + '.json'); } catch (e) { if (!c) { v.innerHTML = '<a class="back" href="#/activity">‹ Back</a><h1>Auditor</h1><div class="empty">No coin taken apart yet</div>'; return; } } }
-    if (update && $('#discs')) return;
+    if (!c || !update) { try { c = S.coins[mint] = await get('coin/' + mint + '.json'); } catch (e) { if (!c) { v.innerHTML = '<a class="back" href="#/activity">‹ Retour</a><h1>Auditor</h1><div class="empty">Aucun coin passé au peigne fin</div>'; return; } } }
+    if (update && $('#layers')) return;
     const L = c.audit.layers, checked = L.filter(l => l.pass !== null);
     const rej = c.audit.rejectedReason;
-    v.innerHTML = `<a class="back" href="#/activity">‹ Back</a><h1>${esc(c.name)}</h1>
-      <div class="discs" id="discs">${L.map((l, i) => `<div class="disc" data-i="${i}" style="top:${i * 26}px"></div>`).join('')}<div class="beam" id="beam"></div></div>
-      <div id="vrows">${L.map((l, i) => `<div class="vrow"><span class="ck" id="ck${i}"></span><span style="flex:1">${esc(l.name)}</span><span class="sub">${esc(l.pass === null ? 'not checked' : '')}</span><span id="vv${i}"></span></div>`).join('')}</div>
-      <div style="margin-top:16px" id="verdict"></div>
-      <div class="set"><div class="l"><span>Take apart before buying</span><button class="sw ${c.audit.enabled ? 'on' : ''}" disabled></button></div><div class="note">read-only in plan B · change it via Telegram</div></div>
-      <a class="btn" href="${esc(c.coin_url)}">Open on FOMO</a>`;
-    const discs = [...v.querySelectorAll('.disc')], beam = $('#beam');
-    const finish = () => { $('#verdict').innerHTML = !checked.length ? '<div class="empty">No coin taken apart yet</div>' : rej
-      ? `<div style="font-size:20px;font-weight:600" class="r">Rejected · ${esc(rej)}</div><div class="sub">Grok Bot won't buy ${esc(c.name)}</div>`
-      : c.audit.passed ? `<div style="font-size:20px;font-weight:600" class="g">Cleared · 8/8 parts</div><div class="sub">Sent to Executor · ${usd(c.audit.sentUsd)}</div>` : ''; };
-    const show = i => { const l = L[i]; discs[i].classList.add(l.pass ? 'ok' : 'no'); $('#ck' + i).innerHTML = l.pass ? '<span class="g">✓</span>' : '<span class="r">✕</span>'; $('#vv' + i).innerHTML = `<span class="${l.pass ? '' : 'r'}">${esc(l.value)}</span>`; };
-    if (RM || beamDone[mint]) { checked.forEach((l, i) => show(i)); finish(); return; }
-    beamDone[mint] = 1; beam.style.opacity = 1;
-    for (let i = 0; i < checked.length; i++) {           // only layers the server sent
-      beam.style.top = (i * 26 + 10) + 'px';
-      await new Promise(r => setTimeout(r, 350)); await new Promise(r => setTimeout(r, 150)); show(i);
+    const okN = L.filter(l => l.pass === true).length;
+    v.innerHTML = `<a class="back" href="#/activity">‹ Retour</a>
+      <div style="display:flex;align-items:center;gap:8px;margin:4px 0 2px"><h1 style="flex:1;margin:0">${esc(c.name)}</h1>
+        <span class="chip ${c.audit.passed ? '' : 'bad'}">${okN}/8</span></div>
+      <div class="sub" style="margin:0 0 12px">Auditor · 8 couches de sécurité</div>
+      <div class="layers" id="layers">${L.map((l, i) => {
+        const s = layerStatus(l.pass);
+        return `<div class="layer ${s.cls}" id="ly${i}" data-i="${i}">
+          <div class="badge">${s.badge}</div>
+          <div class="body"><div class="ln">${esc(layerLabel(l.name))}</div>
+            <div class="lv" id="lv${i}">${l.pass === null ? 'Pas encore vérifié' : esc(l.value || '')}</div></div>
+          <div class="st">${s.st}</div></div>`;
+      }).join('')}</div>
+      <div id="verdict"></div>
+      <div class="set"><div class="l"><span>Analyser avant d'acheter</span><button class="sw ${c.audit.enabled ? 'on' : ''}" disabled></button></div>
+        <div class="note">lecture seule · change via Telegram</div></div>
+      <a class="btn" href="${esc(c.coin_url)}">Ouvrir sur FOMO</a>`;
+    const finish = () => {
+      const el = $('#verdict');
+      if (!checked.length) { el.innerHTML = '<div class="empty">Aucun coin passé au peigne fin</div>'; return; }
+      if (rej) el.innerHTML = `<div class="verdict-card"><div class="vt r">Refusé · ${esc(rej)}</div><div class="vs">Grok Bot n'achètera pas ${esc(c.name)}</div></div>`;
+      else if (c.audit.passed) el.innerHTML = `<div class="verdict-card"><div class="vt g">Validé · 8/8</div><div class="vs">Envoyé à l'Executor · ${usd(c.audit.sentUsd)}</div></div>`;
+      else el.innerHTML = '';
+    };
+    const reveal = (i) => { const el = $('#ly' + i); if (el) el.classList.add('on'); };
+    if (RM || layerDone[mint]) { L.forEach((_, i) => reveal(i)); finish(); return; }
+    layerDone[mint] = 1;
+    for (let i = 0; i < L.length; i++) {
+      reveal(i);
+      if (L[i].pass !== null) await new Promise(r => setTimeout(r, 120));
     }
-    beam.style.opacity = 0; finish();
+    finish();
   }
   // ---------------- COIN SCREEN
   async function coin(mint, update) {
