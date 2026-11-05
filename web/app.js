@@ -267,7 +267,14 @@
   function agentCards(st) {
     const a = st.agents;
     const sc = a.scanner, au = a.auditor, an = a.analyst, ex = a.executor, ri = a.risk;
-    const feed = sc.feed.length ? `<ul class="feed">${sc.feed.map(f => `<li class="${f.verdict === 'kill' ? 'killed' : ''}"><a class="nm" href="${esc(f.coin_url)}">${esc(f.name)}</a><span class="${f.verdict === 'kill' ? 'r' : 'g'}">${f.verdict === 'kill' ? esc(f.reason) : '→ auditor'}</span></li>`).join('')}</ul>`
+    // Hide green "→ auditor" once Auditor (or Analyst reject) already finished that mint.
+    const dec = st.decisions || {};
+    const finished = new Set([
+      ...(dec.auditor || []).map(d => d.mint),
+      ...(dec.analyst || []).filter(d => /reject/.test(d.verdict || '')).map(d => d.mint),
+    ]);
+    const rows = (sc.feed || []).filter(f => f.verdict === 'kill' || !finished.has(f.mint));
+    const feed = rows.length ? `<ul class="feed">${rows.map(f => `<li class="${f.verdict === 'kill' ? 'killed' : ''}"><a class="nm" href="${esc(f.coin_url)}">${esc(f.name)}</a><span class="${f.verdict === 'kill' ? 'r' : 'g'}">${f.verdict === 'kill' ? esc(f.reason) : '→ auditor'}</span></li>`).join('')}</ul>`
       : '<div class="empty">Listening for graduations</div>';
     const strips = `<div class="strips">${[0, 1, 2, 3, 4, 5, 6, 7].map(i => `<i class="${au.strips[i] === true ? 'ok' : au.strips[i] === false ? 'no' : ''}"></i>`).join('')}</div>`;
     const auLine = au.running ? 'taking apart...' : au.last ? (au.last.passed ? '8/8 → Executor' : esc(au.last.reason)) : 'No coin taken apart yet';
